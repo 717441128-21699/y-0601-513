@@ -162,6 +162,17 @@ class VerificationManager:
         verification.rollback_reason = "扩容验证未通过，自动回滚"
         verification.status = VerificationStatus.ROLLED_BACK.value
 
+        rollback_time = datetime.now()
+        rollback_conclusion = (
+            f"\n\n=== 回滚结论 ===\n"
+            f"回滚时间: {rollback_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"回滚操作人: {operator}\n"
+            f"回滚原因: {verification.rollback_reason}\n"
+            f"回滚状态: 已执行完成\n"
+            f"后续建议: 请核查扩容配置，评估是否需要重新评估扩容方案"
+        )
+        verification.verification_report = (verification.verification_report or '') + rollback_conclusion
+
         self.db.commit()
 
         audit_logger.log_audit(

@@ -576,6 +576,33 @@ class ReportGenerator:
         verification_failed_count = sum(1 for v in verifications if v.status in ['failed', 'rolled_back'])
         verification_rolled_back_count = sum(1 for v in verifications if v.is_rolled_back)
 
+        failed_verifications_detail = []
+        for v in verifications:
+            if v.status in ['failed', 'rolled_back']:
+                plan = self.db.query(ExpansionPlan).filter(ExpansionPlan.id == v.expansion_plan_id).first()
+                server = self.db.query(Server).filter(Server.id == plan.server_id).first() if plan else None
+                order = self.db.query(PurchaseOrder).filter(PurchaseOrder.expansion_plan_id == v.expansion_plan_id).order_by(PurchaseOrder.id.desc()).first()
+
+                failed_verifications_detail.append({
+                    'verification_id': v.id,
+                    'server_name': server.name if server else '未知',
+                    'plan_title': plan.plan_title if plan else '未知',
+                    'plan_id': plan.id if plan else 0,
+                    'order_no': order.order_no if order else '无',
+                    'order_supplier': order.supplier if order else '无',
+                    'resource_type': plan.resource_type if plan else '未知',
+                    'status': v.status,
+                    'is_rolled_back': v.is_rolled_back,
+                    'rollback_reason': v.rollback_reason or '',
+                    'verification_report': v.verification_report or '',
+                    'cpu_before': v.cpu_before,
+                    'cpu_after': v.cpu_after,
+                    'memory_before': v.memory_before,
+                    'memory_after': v.memory_after,
+                    'verified_at': v.verified_at,
+                    'verified_by': v.verified_by or 'system'
+                })
+
         metrics = self.db.query(ResourceMetric).filter(
             ResourceMetric.timestamp >= start_time,
             ResourceMetric.timestamp < end_time
@@ -609,6 +636,7 @@ class ReportGenerator:
             'verification_passed_count': verification_passed_count,
             'verification_failed_count': verification_failed_count,
             'verification_rolled_back_count': verification_rolled_back_count,
+            'failed_verifications_detail': failed_verifications_detail,
             'avg_cpu': avg_cpu,
             'avg_memory': avg_memory,
             'avg_disk': avg_disk,
@@ -661,6 +689,27 @@ class ReportGenerator:
             f"    - 验证通过: {stats['verification_passed_count']} 次",
             f"    - 验证失败: {stats['verification_failed_count']} 次",
             f"    - 已自动回滚: {stats['verification_rolled_back_count']} 次",
+        ])
+
+        if stats.get('failed_verifications_detail'):
+            lines.append(f"  失败验证明细:")
+            for idx, v in enumerate(stats['failed_verifications_detail'], 1):
+                rolled = " [已回滚]" if v['is_rolled_back'] else ""
+                lines.append(f"    {idx}. {v['server_name']} - {v['plan_title']}{rolled}")
+                lines.append(f"       采购订单: {v['order_no']} (供应商: {v['order_supplier']})")
+                lines.append(
+                    f"       验证时间: {v['verified_at'].strftime('%Y-%m-%d %H:%M') if v['verified_at'] else '-'}, "
+                    f"操作人: {v['verified_by']}"
+                )
+                if v['rollback_reason']:
+                    lines.append(f"       失败原因: {v['rollback_reason']}")
+                if v.get('cpu_before') is not None and v.get('cpu_after') is not None:
+                    lines.append(
+                        f"       验证数据: CPU {v['cpu_before']}% -> {v['cpu_after']}%, "
+                        f"内存 {v['memory_before']}% -> {v['memory_after']}%"
+                    )
+
+        lines.extend([
             f"",
             f"【平均资源使用率】",
             f"  - CPU: {stats['avg_cpu']}%",
@@ -785,6 +834,61 @@ class ReportGenerator:
                 ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
             ]))
             story.append(verify_table)
+
+            if stats.get('failed_verifications_detail'):
+                story.append(Spacer(1, 0.3*cm))
+                story.append(Paragraph("失败验证明细", heading_style))
+                failed_data = [
+                    ['服务器', '扩容方案', '采购订单', '供应商', '失败原因', '是否回滚', '验证时间', '操作人']
+                ]
+                for v in stats['failed_verifications_detail']:
+                    rolled = '是' if v['is_rolled_back'] else '否'
+                    failed_data.append([
+                        v['server_name'],
+                        v['plan_title'][:20] + ('...' if len(v['plan_title']) > 20 else ''),
+                        v['order_no'],
+                        v['order_supplier'],
+                        v['rollback_reason'][:30] if v['rollback_reason'] else '验证未达标',
+                        rolled,
+                        v['verified_at'].strftime('%m-%d %H:%M') if v['verified_at'] else '-',
+                        v['verified_by']
+                    ])
+                failed_table = Table(failed_data, colWidths=[2.2*cm, 3*cm, 2.3*cm, 2*cm, 3.5*cm, 1.5*cm, 2.2*cm, 1.8*cm])
+                failed_table.setStyle(TableStyle([
+                    ('FONTNAME', (0, 0), (-1, -1), body_font),
+                    ('FONTSIZE', (0, 0), (-1, -1), 8),
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.lightcoral),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                ]))
+                story.append(failed_table)
+
+                if stats['failed_verifications_detail']:
+                    story.append(Spacer(1, 0.3*cm))
+                    story.append(Paragraph("失败验证详细信息", heading_style))
+                    for idx, v in enumerate(stats['failed_verifications_detail'], 1):
+                        rolled = "[已自动回滚]" if v['is_rolled_back'] else ""
+                        detail_text = (
+                            f"<b>{idx}. {v['server_name']} - {v['plan_title']}</b> {rolled}<br/>"
+                            f"&nbsp;&nbsp;采购订单: {v['order_no']} (供应商: {v['order_supplier']})<br/>"
+                            f"&nbsp;&nbsp;验证时间: {v['verified_at'].strftime('%Y-%m-%d %H:%M:%S') if v['verified_at'] else '-'}<br/>"
+                            f"&nbsp;&nbsp;操作人: {v['verified_by']}<br/>"
+                        )
+                        if v['rollback_reason']:
+                            detail_text += f"&nbsp;&nbsp;<b>失败原因:</b> {v['rollback_reason']}<br/>"
+                        if v['verification_report']:
+                            detail_text += f"&nbsp;&nbsp;<b>验证报告:</b> {v['verification_report']}<br/>"
+                        if v.get('cpu_before') is not None:
+                            detail_text += (
+                                f"&nbsp;&nbsp;验证数据: "
+                                f"CPU {v['cpu_before']}% -> {v['cpu_after']}%, "
+                                f"内存 {v['memory_before']}% -> {v['memory_after']}%, "
+                                f"磁盘 {v['disk_before']}% -> {v['disk_after']}%"
+                            )
+                        story.append(Paragraph(detail_text, normal_style))
+                        story.append(Spacer(1, 0.2*cm))
 
             story.append(Paragraph("四、资源使用率", heading_style))
             usage_data = [
@@ -926,6 +1030,52 @@ class ReportGenerator:
                         cell.alignment = center_align
             ws4.column_dimensions['A'].width = 20
             ws4.column_dimensions['B'].width = 15
+
+            if stats.get('failed_verifications_detail'):
+                ws_fail = wb.create_sheet("失败验证明细")
+                fail_header = [
+                    '验证ID', '服务器', '扩容方案', '方案ID',
+                    '采购订单号', '供应商', '资源类型', '验证状态',
+                    '是否回滚', '失败原因', '验证报告',
+                    'CPU前(%)', 'CPU后(%)', '内存前(%)', '内存后(%)',
+                    '验证人', '验证时间'
+                ]
+                for j, value in enumerate(fail_header, start=1):
+                    cell = ws_fail.cell(row=1, column=j, value=value)
+                    cell.font = header_font
+                    cell.fill = PatternFill(start_color="F8CBAD", end_color="F8CBAD", fill_type="solid")
+                    cell.alignment = center_align
+                    cell.border = thin_border
+
+                for i, v in enumerate(stats['failed_verifications_detail'], start=2):
+                    rolled = '是' if v['is_rolled_back'] else '否'
+                    status = '已回滚' if v['is_rolled_back'] else v['status']
+                    row_data = [
+                        v['verification_id'],
+                        v['server_name'],
+                        v['plan_title'],
+                        v['plan_id'],
+                        v['order_no'],
+                        v['order_supplier'],
+                        v['resource_type'],
+                        status,
+                        rolled,
+                        v['rollback_reason'] or '验证未达标',
+                        v['verification_report'] or '',
+                        v['cpu_before'] if v['cpu_before'] else '',
+                        v['cpu_after'] if v['cpu_after'] else '',
+                        v['memory_before'] if v['memory_before'] else '',
+                        v['memory_after'] if v['memory_after'] else '',
+                        v['verified_by'],
+                        v['verified_at'].strftime('%Y-%m-%d %H:%M:%S') if v['verified_at'] else ''
+                    ]
+                    for j, value in enumerate(row_data, start=1):
+                        cell = ws_fail.cell(row=i, column=j, value=value)
+                        cell.border = thin_border
+
+                col_widths = [8, 15, 25, 8, 18, 15, 10, 10, 8, 30, 30, 10, 10, 10, 10, 10, 20]
+                for j, w in enumerate(col_widths, start=1):
+                    ws_fail.column_dimensions[chr(64 + j)].width = w
 
             ws5 = wb.create_sheet("预警明细")
             alert_data = [['预警ID', '服务器', '资源类型', '级别', '标题', '状态', '创建时间']]

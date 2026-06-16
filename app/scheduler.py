@@ -1,10 +1,13 @@
 import time
 import random
 from datetime import datetime
+from typing import Optional
+from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 from .database import config, init_db, get_db
+from .models import Alert, ResourceMetric
 from .collector import ResourceCollector
 from .predictor import BaselineCalculator, ResourcePredictor
 from .alert_manager import AlertManager
@@ -128,6 +131,69 @@ class CapacityManagementSystem:
         db.commit()
         print(f"[OK] 已初始化 {len(servers_config)} 台默认服务器")
 
+    def _clear_demo_data(self, db: Session):
+        from .models import Baseline, Prediction, Alert, ExpansionPlan, Approval, PurchaseOrder, Verification, AuditLog, HealthReport, ResourceMetric
+
+        print("  正在清理旧的演示数据...")
+        db.query(HealthReport).delete()
+        db.query(AuditLog).delete()
+        db.query(Verification).delete()
+        db.query(PurchaseOrder).delete()
+        db.query(Approval).delete()
+        db.query(ExpansionPlan).delete()
+        db.query(Alert).delete()
+        db.query(Prediction).delete()
+        db.query(Baseline).delete()
+        db.query(ResourceMetric).delete()
+        db.commit()
+        print("  [OK] 旧数据已清理")
+
+    def init_demo_data(self) -> bool:
+        print("\n" + "=" * 60)
+        print("单独初始化演示数据...")
+        print("=" * 60 + "\n")
+
+        init_db()
+        self._init_default_servers()
+        db = next(get_db())
+
+        self._clear_demo_data(db)
+
+        print("[1/5] 生成历史数据...")
+        collector = ResourceCollector(db)
+        history_count = collector.generate_historical_data(days=30)
+        print(f"  [OK] 已生成 {history_count} 条历史数据\n")
+
+        print("[2/5] 计算动态基线...")
+        calculator = BaselineCalculator(db)
+        baselines = calculator.calculate_all_baselines()
+        print(f"  [OK] 已计算 {len(baselines)} 条资源基线\n")
+
+        print("[3/5] 资源需求预测...")
+        predictor = ResourcePredictor(db)
+        predictions = predictor.predict_all_servers()
+        print(f"  [OK] 已生成 {len(predictions)} 条预测数据\n")
+
+        print("[4/5] 容量预警检测...")
+        alert_manager = AlertManager(db)
+        alerts = alert_manager.check_all_alerts()
+        print(f"  [OK] 已生成 {len(alerts)} 条容量预警\n")
+
+        print("[5/5] 生成扩容方案...")
+        planner = ExpansionPlanner(db)
+        plan_count = 0
+        for alert in alerts:
+            if alert.alert_level in ['critical', 'fatal']:
+                plan = planner.generate_plan_from_alert(alert.id)
+                if plan:
+                    plan_count += 1
+        print(f"  [OK] 已生成 {plan_count} 个扩容方案\n")
+
+        print("=" * 60)
+        print("演示数据初始化完成！")
+        print("=" * 60)
+        return True
+
     def _job_collect_metrics(self):
         try:
             db = next(get_db())
@@ -188,7 +254,7 @@ class CapacityManagementSystem:
         except Exception as e:
             print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 超时预警检查失败: {e}")
 
-    def run_demo(self):
+    def run_demo(self, force_reset: bool = False):
         print("\n" + "=" * 60)
         print("运行系统演示...")
         print("=" * 60 + "\n")
@@ -196,6 +262,24 @@ class CapacityManagementSystem:
         init_db()
         self._init_default_servers()
         db = next(get_db())
+
+        existing_alerts = db.query(Alert).count()
+        existing_metrics = db.query(ResourceMetric).count()
+
+        if not force_reset and (existing_alerts > 0 or existing_metrics > 100):
+            print(f"[!] 检测到数据库中已有数据:")
+            print(f"    - 预警记录: {existing_alerts} 条")
+            print(f"    - 资源指标: {existing_metrics} 条")
+            print(f"\n演示运行将会覆盖现有数据并重新生成30天历史数据。")
+            confirm = input("\n是否继续？此操作将重新初始化演示数据 (y/N): ").strip().lower()
+            if confirm != 'y':
+                print("\n[X] 已取消演示运行")
+                print("[!] 如需单独初始化演示数据，可在菜单中选择'初始化演示数据'选项")
+                return
+
+            self._clear_demo_data(db)
+
+        self._clear_demo_data(db)
 
         print("[1/5] 生成历史数据...")
         collector = ResourceCollector(db)

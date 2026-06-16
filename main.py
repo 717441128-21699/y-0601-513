@@ -26,15 +26,18 @@ def print_menu():
     print("1. 启动系统（定时任务模式）")
     print("2. 运行系统演示")
     print("3. 执行单次采集分析")
-    print("4. 查看服务器列表")
-    print("5. 查看预警记录")
-    print("6. 查看扩容方案")
-    print("7. 查看采购订单（含交付跟踪）")
-    print("8. 查看健康报告（日/周/月）")
-    print("9. 审批扩容方案")
-    print("10. 执行扩容验证")
-    print("11. 导出数据（Excel）")
-    print("12. 查看审计日志")
+    print("4. 初始化演示数据（单独执行）")
+    print("5. 查看服务器列表")
+    print("6. 查看预警记录")
+    print("7. 查看扩容方案")
+    print("8. 查看采购订单（含交付跟踪）")
+    print("9. 查看健康报告（日/周/月）")
+    print("10. 查看容量事件时间线")
+    print("11. 审批扩容方案")
+    print("12. 执行扩容验证")
+    print("13. 导出数据（Excel）")
+    print("14. 审计日志筛选与导出")
+    print("15. 查看审计日志")
     print("0. 退出系统")
     print("=" * 60)
 
@@ -661,6 +664,165 @@ def export_data():
         print("[!] 无效选择")
 
 
+def view_capacity_timeline():
+    db = next(get_db())
+    qs = QueryService(db)
+
+    print("\n" + "=" * 70)
+    print("                        容量事件时间线")
+    print("=" * 70)
+
+    servers = qs.get_server_list()
+    print("\n可选业务系统：")
+    for idx, s in enumerate(servers, 1):
+        print(f"  {idx}. {s.name} ({s.type})")
+    print("  0. 全部系统")
+
+    server_choice = input("\n请选择业务系统序号（0=全部）: ").strip()
+    server_name = None
+    if server_choice and server_choice.isdigit() and int(server_choice) > 0:
+        idx = int(server_choice) - 1
+        if 0 <= idx < len(servers):
+            server_name = servers[idx].name
+            print(f"[OK] 已选择: {server_name}")
+
+    start_date_str = input("开始日期 (YYYY-MM-DD，回车不限): ").strip()
+    end_date_str = input("结束日期 (YYYY-MM-DD，回车不限): ").strip()
+
+    start_time = None
+    end_time = None
+    if start_date_str:
+        try:
+            start_time = datetime.strptime(start_date_str, '%Y-%m-%d')
+        except ValueError:
+            print(f"[!] 开始日期格式无效: {start_date_str}")
+    if end_date_str:
+        try:
+            end_time = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_time = end_time.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            print(f"[!] 结束日期格式无效: {end_date_str}")
+
+    print("\n正在查询时间线...")
+    result = qs.get_capacity_timeline(
+        server_name=server_name,
+        start_time=start_time,
+        end_time=end_time,
+        limit=50
+    )
+
+    print(f"\n找到 {result['total']} 条容量事件链，显示前50条：")
+
+    level_marker = {'warning': '[!]', 'critical': '[X]', 'fatal': '[F]'}
+    status_marker = {'pending': '[ ]', 'passed': '[OK]', 'approved': '[OK]', 'delivered': '[OK]', 'completed': '[OK]',
+                     'failed': '[X]', 'rejected': '[X]', 'rolled_back': '[X]', 'issued': '[ ]', 'in_progress': '[ ]'}
+
+    for tl in result['timelines']:
+        print("\n" + "-" * 70)
+        level = level_marker.get(tl['alert_level'], '[ ]')
+        print(f"{level} 预警 #{tl['alert_id']}: {tl['server_name']} - {tl['alert_title']}")
+        print(f"    当前卡点: {tl['current_stage']}")
+        print("    事件链:")
+
+        for ev in tl['events']:
+            time_str = ev['timestamp'].strftime('%Y-%m-%d %H:%M') if ev['timestamp'] else '-------- --:--'
+            status = status_marker.get(ev['status'], '[ ]')
+            if ev.get('is_pending'):
+                status = '[WAIT]'
+                op = ''
+            else:
+                op = f"操作人: {ev['operator']}" if ev['operator'] else ''
+            print(f"      {status} {ev['event_type']:<8} {time_str}  {ev['title']}")
+            if op:
+                print(f"                {op}")
+            if ev['details']:
+                print(f"                {ev['details']}")
+
+    if result['current_stages']:
+        pending_count = sum(1 for s in result['current_stages'].values() if s['current_stage'] != '已完成')
+        print("\n" + "=" * 70)
+        print(f"[!] 当前共 {pending_count} 个事件在处理中，{len(result['current_stages']) - pending_count} 个已完成")
+        if pending_count > 0:
+            print("    处理中的事件：")
+            for alert_id, stage_info in result['current_stages'].items():
+                if stage_info['current_stage'] != '已完成':
+                    print(f"      - {stage_info['server']}: {stage_info['current_stage']}")
+
+    print("\n" + "=" * 70)
+
+
+def manage_audit_logs():
+    db = next(get_db())
+    qs = QueryService(db)
+    es = ExportService(db)
+
+    print("\n" + "=" * 70)
+    print("                    审计日志筛选与导出")
+    print("=" * 70)
+
+    modules = qs.get_audit_modules()
+    operators = qs.get_audit_operators()
+
+    print(f"\n已有模块: {', '.join(modules) if modules else '无'}")
+    print(f"已有操作人: {', '.join(operators) if operators else '无'}")
+
+    print("\n请设置筛选条件（直接回车表示不限制）：")
+    module = input("  模块: ").strip() or None
+    action = input("  操作: ").strip() or None
+    operator = input("  操作人: ").strip() or None
+    result_filter = input("  结果 (success/failed): ").strip() or None
+
+    start_date_str = input("  开始日期 (YYYY-MM-DD): ").strip()
+    end_date_str = input("  结束日期 (YYYY-MM-DD): ").strip()
+
+    start_time = None
+    end_time = None
+    if start_date_str:
+        try:
+            start_time = datetime.strptime(start_date_str, '%Y-%m-%d')
+        except ValueError:
+            print(f"[!] 开始日期格式无效: {start_date_str}")
+    if end_date_str:
+        try:
+            end_time = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_time = end_time.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            print(f"[!] 结束日期格式无效: {end_date_str}")
+
+    preview = qs.query_audit_logs(
+        module=module, action=action, operator=operator, result=result_filter,
+        start_time=start_time, end_time=end_time, limit=20
+    )
+
+    print("\n" + "-" * 70)
+    print(f"符合条件的记录共 {preview['total']} 条，预览前20条：")
+    print(f"{'时间':<20} {'模块':<12} {'操作':<12} {'操作人':<12} {'结果':<8} {'详情'}")
+    print("-" * 70)
+    result_names = {'success': '成功', 'failed': '失败', 'warning': '警告'}
+    for log in preview['items']:
+        ts = log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else ''
+        res = result_names.get(log.result, log.result)
+        details = (log.details or '')[:30]
+        print(f"{ts:<20} {log.module:<12} {log.action:<12} {(log.operator or ''):<12} {res:<8} {details}")
+
+    print("-" * 70)
+
+    if preview['total'] == 0:
+        print("\n[!] 没有符合条件的记录")
+        return
+
+    export_choice = input(f"\n是否导出 {preview['total']} 条记录到Excel？(y/N): ").strip().lower()
+    if export_choice == 'y':
+        print(f"\n正在导出 {preview['total']} 条审计日志...")
+        filepath = es.export_audit_logs_excel(
+            module=module, action=action, operator=operator, result=result_filter,
+            start_time=start_time, end_time=end_time
+        )
+        print(f"\n[OK] 导出成功！共 {preview['total']} 条记录")
+        print(f"     文件路径: {filepath}")
+        print(f"     Excel包含'筛选条件摘要'Sheet供复核")
+
+
 def view_audit_logs():
     db = next(get_db())
     logs = get_audit_logs(db, limit=50)
@@ -690,7 +852,7 @@ def main():
 
     while True:
         print_menu()
-        choice = input("\n请选择操作 [0-12]: ").strip()
+        choice = input("\n请选择操作 [0-15]: ").strip()
 
         if choice == '0':
             print("\n感谢使用，再见！")
@@ -710,22 +872,28 @@ def main():
         elif choice == '3':
             system.run_once()
         elif choice == '4':
-            view_servers()
+            system.init_demo_data()
         elif choice == '5':
-            view_alerts()
+            view_servers()
         elif choice == '6':
-            view_expansions()
+            view_alerts()
         elif choice == '7':
-            view_orders()
+            view_expansions()
         elif choice == '8':
-            view_reports()
+            view_orders()
         elif choice == '9':
-            approve_expansion()
+            view_reports()
         elif choice == '10':
-            run_verification()
+            view_capacity_timeline()
         elif choice == '11':
-            export_data()
+            approve_expansion()
         elif choice == '12':
+            run_verification()
+        elif choice == '13':
+            export_data()
+        elif choice == '14':
+            manage_audit_logs()
+        elif choice == '15':
             view_audit_logs()
         else:
             print("\n无效选择，请重新输入")

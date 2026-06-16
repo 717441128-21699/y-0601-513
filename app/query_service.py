@@ -150,8 +150,9 @@ class QueryService:
         }
 
     def query_audit_logs(self, module: str = None, action: str = None,
-                         operator: str = None, start_time: datetime = None,
-                         end_time: datetime = None, limit: int = 100, offset: int = 0) -> Dict:
+                         operator: str = None, result: str = None,
+                         start_time: datetime = None, end_time: datetime = None,
+                         limit: int = 100, offset: int = 0, export_all: bool = False) -> Dict:
         query = self.db.query(AuditLog)
 
         if module:
@@ -160,13 +161,18 @@ class QueryService:
             query = query.filter(AuditLog.action == action)
         if operator:
             query = query.filter(AuditLog.operator.like(f"%{operator}%"))
+        if result:
+            query = query.filter(AuditLog.result == result)
         if start_time:
             query = query.filter(AuditLog.timestamp >= start_time)
         if end_time:
             query = query.filter(AuditLog.timestamp <= end_time)
 
         total = query.count()
-        logs = query.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit).all()
+        if export_all:
+            logs = query.order_by(AuditLog.timestamp.desc()).all()
+        else:
+            logs = query.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit).all()
 
         return {
             'total': total,
@@ -175,6 +181,14 @@ class QueryService:
             'page_size': limit
         }
 
+    def get_audit_modules(self) -> List[str]:
+        results = self.db.query(AuditLog.module).distinct().all()
+        return sorted([r[0] for r in results if r[0]])
+
+    def get_audit_operators(self) -> List[str]:
+        results = self.db.query(AuditLog.operator).distinct().all()
+        return sorted([r[0] for r in results if r[0]])
+
     def get_server_list(self, server_type: str = None, is_active: bool = None) -> List[Server]:
         query = self.db.query(Server)
         if server_type:
@@ -182,6 +196,182 @@ class QueryService:
         if is_active is not None:
             query = query.filter(Server.is_active == is_active)
         return query.order_by(Server.name).all()
+
+    def get_capacity_timeline(self, server_name: str = None, start_time: datetime = None,
+                              end_time: datetime = None, limit: int = 100, export_all: bool = False) -> Dict:
+        from .models import Approval
+
+        server_filter = None
+        if server_name:
+            server = self.db.query(Server).filter(Server.name.like(f"%{server_name}%")).first()
+            if not server:
+                return {'total': 0, 'timelines': [], 'current_stages': {}}
+            server_filter = server.id
+
+        alert_query = self.db.query(Alert)
+        if server_filter is not None:
+            alert_query = alert_query.filter(Alert.server_id == server_filter)
+        if start_time:
+            alert_query = alert_query.filter(Alert.created_at >= start_time)
+        if end_time:
+            alert_query = alert_query.filter(Alert.created_at <= end_time)
+        alerts = alert_query.order_by(Alert.created_at.desc()).all()
+
+        timelines = []
+        current_stages = {}
+
+        for alert in alerts:
+            timeline_events = []
+            server = self.db.query(Server).filter(Server.id == alert.server_id).first()
+            server_name_val = server.name if server else '未知'
+
+            timeline_events.append({
+                'event_type': '预警',
+                'event_id': alert.id,
+                'timestamp': alert.created_at,
+                'operator': 'system',
+                'status': alert.status,
+                'title': f"{alert.alert_level}级预警 - {alert.title}",
+                'details': f"资源: {alert.resource_type}, 当前值: {alert.current_value}%, 阈值: {alert.threshold_value}%"
+            })
+
+            plan = self.db.query(ExpansionPlan).filter(ExpansionPlan.alert_id == alert.id).first()
+            if not plan:
+                timeline_events.append({
+                    'event_type': '等待中',
+                    'event_id': None,
+                    'timestamp': None,
+                    'operator': None,
+                    'status': 'pending',
+                    'title': '待生成扩容方案',
+                    'details': '预警尚未生成扩容方案',
+                    'is_pending': True
+                })
+            else:
+                timeline_events.append({
+                    'event_type': '扩容方案',
+                    'event_id': plan.id,
+                    'timestamp': plan.created_at,
+                    'operator': plan.created_by or 'system',
+                    'status': plan.status,
+                    'title': plan.plan_title,
+                    'details': f"规格: {plan.recommended_spec}, 数量: {plan.quantity}, 预估费用: {plan.estimated_cost:,.2f} {plan.cost_currency}"
+                })
+
+                approval = self.db.query(Approval).filter(Approval.expansion_plan_id == plan.id).first()
+                if not approval:
+                    timeline_events.append({
+                        'event_type': '等待中',
+                        'event_id': None,
+                        'timestamp': None,
+                        'operator': None,
+                        'status': 'pending',
+                        'title': '待审批',
+                        'details': '扩容方案待管理员审批',
+                        'is_pending': True
+                    })
+                else:
+                    timeline_events.append({
+                        'event_type': '审批',
+                        'event_id': approval.id,
+                        'timestamp': approval.approved_at,
+                        'operator': approval.approver,
+                        'status': approval.status,
+                        'title': f"审批{'通过' if approval.status == 'approved' else '拒绝'}",
+                        'details': f"审批意见: {approval.comments or '无'}"
+                    })
+
+                    if approval.status == 'approved':
+                        order = self.db.query(PurchaseOrder).filter(PurchaseOrder.expansion_plan_id == plan.id).first()
+                        if not order:
+                            timeline_events.append({
+                                'event_type': '等待中',
+                                'event_id': None,
+                                'timestamp': None,
+                                'operator': None,
+                                'status': 'pending',
+                                'title': '待采购',
+                                'details': '审批通过，待生成采购订单',
+                                'is_pending': True
+                            })
+                        else:
+                            timeline_events.append({
+                                'event_type': '采购',
+                                'event_id': order.id,
+                                'timestamp': order.created_at,
+                                'operator': order.issued_by or 'system',
+                                'status': order.status,
+                                'title': f"采购订单 {order.order_no}",
+                                'details': f"供应商: {order.supplier}, 金额: {order.total_amount:,.2f} {order.currency}"
+                            })
+
+                            if order.status in ['delivered', 'completed']:
+                                verification = self.db.query(Verification).filter(
+                                    Verification.expansion_plan_id == plan.id
+                                ).order_by(Verification.id.desc()).first()
+                                if not verification:
+                                    timeline_events.append({
+                                        'event_type': '等待中',
+                                        'event_id': None,
+                                        'timestamp': None,
+                                        'operator': None,
+                                        'status': 'pending',
+                                        'title': '待验证',
+                                        'details': '采购已交付，待执行扩容验证',
+                                        'is_pending': True
+                                    })
+                                else:
+                                    timeline_events.append({
+                                        'event_type': '验证',
+                                        'event_id': verification.id,
+                                        'timestamp': verification.verified_at,
+                                        'operator': verification.verified_by or 'system',
+                                        'status': verification.status,
+                                        'title': f"验证{'通过' if verification.status == 'passed' else '失败'}",
+                                        'details': f"CPU: {verification.cpu_before}% -> {verification.cpu_after}%, 内存: {verification.memory_before}% -> {verification.memory_after}%"
+                                    })
+
+                                    if verification.is_rolled_back:
+                                        timeline_events.append({
+                                            'event_type': '回滚',
+                                            'event_id': verification.id,
+                                            'timestamp': verification.verified_at,
+                                            'operator': 'system',
+                                            'status': 'rolled_back',
+                                            'title': '已自动回滚',
+                                            'details': f"回滚原因: {verification.rollback_reason or '验证未达标'}"
+                                        })
+
+            pending_stage = '已完成'
+            for ev in reversed(timeline_events):
+                if ev.get('is_pending'):
+                    pending_stage = ev['title']
+                    break
+            current_stages[alert.id] = {
+                'server': server_name_val,
+                'alert_title': alert.title,
+                'current_stage': pending_stage,
+                'last_update': timeline_events[-1]['timestamp'] if timeline_events else None
+            }
+
+            timelines.append({
+                'alert_id': alert.id,
+                'server_name': server_name_val,
+                'alert_title': alert.title,
+                'alert_level': alert.alert_level,
+                'events': timeline_events,
+                'current_stage': pending_stage
+            })
+
+        total = len(timelines)
+        if not export_all:
+            timelines = timelines[:limit]
+
+        return {
+            'total': total,
+            'timelines': timelines,
+            'current_stages': current_stages
+        }
 
 
 class ExportService:
@@ -726,4 +916,80 @@ class ExportService:
             )
 
         return results
+
+    def export_audit_logs_excel(self, module: str = None, action: str = None,
+                                 operator: str = None, result: str = None,
+                                 start_time: datetime = None, end_time: datetime = None) -> str:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+        filter_conditions = {
+            'module': module or '全部',
+            'action': action or '全部',
+            'operator': operator or '全部',
+            'result': result or '全部',
+            'start_time': start_time,
+            'end_time': end_time
+        }
+
+        try:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"audit_logs_export_{timestamp}.xlsx"
+            filepath = os.path.join(self.export_dir, filename)
+
+            query_service = QueryService(self.db)
+            result_data = query_service.query_audit_logs(
+                module=module, action=action, operator=operator, result=result,
+                start_time=start_time, end_time=end_time, export_all=True
+            )
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "审计日志"
+            headers = ['日志ID', '时间', '模块', '操作', '资源类型', '资源ID', '操作人', 'IP地址', '结果', '详情']
+            thin_border = self._style_header(ws, headers, "5B9BD5")
+
+            result_names = {'success': '成功', 'failed': '失败', 'warning': '警告'}
+
+            items = result_data['items']
+            if len(items) != result_data['total']:
+                print(f"[!] 警告: 实际导出 {len(items)} 条，查询总数 {result_data['total']} 条")
+
+            for row_idx, log in enumerate(items, 2):
+                data = [
+                    log.id,
+                    log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else '',
+                    log.module or '',
+                    log.action or '',
+                    log.resource_type or '',
+                    log.resource_id or '',
+                    log.operator or '',
+                    log.ip_address or '',
+                    result_names.get(log.result, log.result),
+                    log.details or ''
+                ]
+                for col, value in enumerate(data, 1):
+                    cell = ws.cell(row=row_idx, column=col, value=value)
+                    cell.border = thin_border
+
+            self._style_data(ws, thin_border, len(headers))
+
+            self._write_summary_sheet(wb, filter_conditions, {'审计日志': result_data['total']})
+
+            wb.save(filepath)
+
+            audit_logger.log_audit(
+                self.db,
+                module="audit",
+                action="export",
+                resource_type="audit_log",
+                operator=operator or 'user',
+                details=f"已导出 {len(items)}/{result_data['total']} 条审计日志"
+            )
+
+            return filepath
+
+        except Exception as e:
+            print(f"导出审计日志失败: {e}")
+            raise
 
