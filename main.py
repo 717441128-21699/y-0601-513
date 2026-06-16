@@ -194,9 +194,11 @@ def view_reports():
 
     reports = report_gen.get_reports(limit=20)
 
-    print("\n" + "-" * 60)
-    print(f"{'ID':<5} {'报告日期':<12} {'类型':<8} {'预警数':<8} {'扩容数':<8} {'CPU':<8} {'内存':<8}")
-    print("-" * 60)
+    print("\n" + "=" * 80)
+    print("                              健康报告列表")
+    print("=" * 80)
+    print(f"{'ID':<5} {'报告日期':<12} {'类型':<8} {'预警数':<8} {'扩容数':<8} {'CPU平均':<10} {'内存平均':<10} {'状态':<8}")
+    print("-" * 80)
 
     type_names = {
         'daily': '日报',
@@ -204,14 +206,108 @@ def view_reports():
         'monthly': '月报'
     }
 
+    if not reports:
+        print("  暂无报告数据，请先运行采集分析或系统演示")
+        print("-" * 80)
+        print("\n提示：可选择菜单 2(运行演示) 或 3(单次采集分析) 生成报告")
+        input("\n按回车键返回主菜单...")
+        return
+
     for report in reports:
         type_name = type_names.get(report.report_type, report.report_type)
         report_date = report.report_date.strftime('%Y-%m-%d') if report.report_date else ''
 
-        print(f"{report.id:<5} {report_date:<12} {type_name:<8} {report.alert_count:>6}条 {report.expansion_count:>6}个 {report.avg_cpu_usage:>6}% {report.avg_memory_usage:>6}%")
+        has_files = "已导出" if (report.pdf_path and report.excel_path) else "未导出"
 
-    print("-" * 60)
+        print(f"{report.id:<5} {report_date:<12} {type_name:<8} {report.alert_count:>6}条 {report.expansion_count:>6}个 {report.avg_cpu_usage:>8}% {report.avg_memory_usage:>8}% {has_files:<8}")
+
+    print("-" * 80)
     print(f"共 {len(reports)} 份报告（显示最近20份）")
+
+    while True:
+        print("\n操作选项：")
+        print("  1. 查看报告详情（含PDF/Excel路径）")
+        print("  2. 打开报告所在文件夹")
+        print("  0. 返回主菜单")
+        choice = input("\n请选择操作 [0-2]: ").strip()
+
+        if choice == '0':
+            return
+        elif choice == '1':
+            report_id = input("请输入要查看的报告ID: ").strip()
+            if not report_id.isdigit():
+                print("[X] 无效的ID，请输入数字")
+                continue
+
+            report = report_gen.get_report(int(report_id))
+            if not report:
+                print("[X] 报告不存在")
+                continue
+
+            type_name = type_names.get(report.report_type, report.report_type)
+            report_date = report.report_date.strftime('%Y-%m-%d') if report.report_date else ''
+
+            print("\n" + "=" * 60)
+            print(f"                        报告详情 (ID: {report.id})")
+            print("=" * 60)
+            print(f"  报告日期:       {report_date}")
+            print(f"  报告类型:       {type_name}")
+            print(f"  监控服务器数:   {report.total_servers} 台")
+            print(f"  预警总数:       {report.alert_count} 条")
+            print(f"    - 警告级别:   {report.warning_count} 条")
+            print(f"    - 严重/致命:  {report.critical_count} 条")
+            print(f"  扩容方案数:     {report.expansion_count} 个")
+            print(f"  扩容完成数:     {report.expansion_completed_count} 个")
+            print(f"  扩容完成率:     {report.expansion_completion_rate}%")
+            print(f"  平均CPU使用率:  {report.avg_cpu_usage}%")
+            print(f"  平均内存使用率: {report.avg_memory_usage}%")
+            print(f"  平均磁盘使用率: {report.avg_disk_usage}%")
+            print(f"  平均网络使用率: {report.avg_network_usage}%")
+            print(f"  生成时间:       {report.created_at.strftime('%Y-%m-%d %H:%M:%S') if report.created_at else ''}")
+            print("-" * 60)
+            print(f"  PDF报告路径:    {report.pdf_path if report.pdf_path else '(未生成)'}")
+            print(f"  Excel报告路径:  {report.excel_path if report.excel_path else '(未生成)'}")
+            print("-" * 60)
+
+            if report.summary:
+                print("\n  报告摘要:")
+                for line in report.summary.split('\n'):
+                    print(f"    {line}")
+
+            print("=" * 60)
+
+            if report.pdf_path or report.excel_path:
+                open_choice = input("\n是否打开报告文件？(y=打开PDF, e=打开Excel, n=不打开): ").strip().lower()
+                if open_choice in ['y', 'e']:
+                    import os
+                    import subprocess
+                    file_path = report.pdf_path if open_choice == 'y' else report.excel_path
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            os.startfile(file_path) if os.name == 'nt' else subprocess.Popen(['xdg-open', file_path])
+                            print(f"[OK] 已尝试打开: {file_path}")
+                        except Exception as e:
+                            print(f"[X] 打开失败: {e}")
+                            print(f"  请手动打开文件路径: {file_path}")
+                    else:
+                        print(f"[X] 文件不存在: {file_path}")
+
+        elif choice == '2':
+            import os
+            import subprocess
+            from app.database import BASE_DIR
+            export_dir = os.path.join(BASE_DIR, 'exports')
+            if os.path.exists(export_dir):
+                try:
+                    os.startfile(export_dir) if os.name == 'nt' else subprocess.Popen(['xdg-open', export_dir])
+                    print(f"[OK] 已打开导出目录: {export_dir}")
+                except Exception as e:
+                    print(f"[!] 无法自动打开: {e}")
+                    print(f"  请手动访问: {export_dir}")
+            else:
+                print(f"[X] 导出目录不存在: {export_dir}")
+        else:
+            print("[!] 无效选择，请重新输入")
 
 
 def approve_expansion():
@@ -318,6 +414,54 @@ def run_verification():
 def export_data():
     db = next(get_db())
     export_service = ExportService(db)
+    query_service = QueryService(db)
+
+    print("\n" + "=" * 60)
+    print("                        数据导出")
+    print("=" * 60)
+    print("请设置筛选条件（直接回车表示不限制）：")
+
+    server_name = input("  服务器名称（支持模糊搜索）: ").strip() or None
+
+    start_date_str = input("  开始日期 (格式: YYYY-MM-DD): ").strip()
+    end_date_str = input("  结束日期 (格式: YYYY-MM-DD): ").strip()
+
+    start_time = None
+    end_time = None
+
+    if start_date_str:
+        try:
+            start_time = datetime.strptime(start_date_str, '%Y-%m-%d')
+        except ValueError:
+            print(f"[!] 开始日期格式无效，已忽略: {start_date_str}")
+
+    if end_date_str:
+        try:
+            end_time = datetime.strptime(end_date_str, '%Y-%m-%d')
+            end_time = end_time.replace(hour=23, minute=59, second=59)
+        except ValueError:
+            print(f"[!] 结束日期格式无效，已忽略: {end_date_str}")
+
+    print("\n当前筛选条件:")
+    print(f"  服务器名称: {server_name if server_name else '全部'}")
+    print(f"  时间范围: {start_time.strftime('%Y-%m-%d') if start_time else '不限'} ~ {end_time.strftime('%Y-%m-%d') if end_time else '不限'}")
+
+    alert_preview = query_service.query_alerts(
+        server_name=server_name,
+        start_time=start_time,
+        end_time=end_time,
+        limit=1
+    )
+    expansion_preview = query_service.query_expansions(
+        server_name=server_name,
+        start_time=start_time,
+        end_time=end_time,
+        limit=1
+    )
+
+    print(f"\n符合条件的记录数预览:")
+    print(f"  预警记录: {alert_preview['total']} 条")
+    print(f"  扩容记录: {expansion_preview['total']} 条")
 
     print("\n请选择导出类型:")
     print("  1. 导出预警记录 (Excel)")
@@ -328,23 +472,51 @@ def export_data():
     choice = input("\n请选择: ").strip()
 
     if choice == '1':
-        print("\n正在导出预警记录...")
-        filepath = export_service.export_alerts_excel()
-        print(f"[OK] 导出成功: {filepath}")
+        if alert_preview['total'] == 0:
+            print("\n[!] 没有符合条件的预警记录可导出")
+            return
+        print(f"\n正在导出 {alert_preview['total']} 条预警记录...")
+        filepath = export_service.export_alerts_excel(
+            server_name=server_name,
+            start_time=start_time,
+            end_time=end_time
+        )
+        print(f"\n[OK] 导出成功！共导出 {alert_preview['total']} 条记录")
+        print(f"     文件路径: {filepath}")
+
     elif choice == '2':
-        print("\n正在导出扩容记录...")
-        filepath = export_service.export_expansions_excel()
-        print(f"[OK] 导出成功: {filepath}")
+        if expansion_preview['total'] == 0:
+            print("\n[!] 没有符合条件的扩容记录可导出")
+            return
+        print(f"\n正在导出 {expansion_preview['total']} 条扩容记录...")
+        filepath = export_service.export_expansions_excel(
+            server_name=server_name,
+            start_time=start_time,
+            end_time=end_time
+        )
+        print(f"\n[OK] 导出成功！共导出 {expansion_preview['total']} 条记录")
+        print(f"     文件路径: {filepath}")
+
     elif choice == '3':
-        print("\n正在批量导出...")
-        results = export_service.batch_export(['alerts', 'expansions'])
-        for type_name, path in results.items():
-            print(f"  [OK] {type_name}: {path}")
-        print("[OK] 批量导出完成")
+        total = alert_preview['total'] + expansion_preview['total']
+        if total == 0:
+            print("\n[!] 没有符合条件的记录可导出")
+            return
+        print(f"\n正在批量导出共 {total} 条记录...")
+        results = export_service.batch_export(
+            export_types=['alerts', 'expansions'],
+            start_time=start_time,
+            end_time=end_time,
+            server_name=server_name
+        )
+        print("\n[OK] 批量导出完成！")
+        print(f"  预警记录: {alert_preview['total']} 条 -> {results.get('alerts', '导出失败')}")
+        print(f"  扩容记录: {expansion_preview['total']} 条 -> {results.get('expansions', '导出失败')}")
+
     elif choice == '0':
         return
     else:
-        print("无效选择")
+        print("[!] 无效选择")
 
 
 def view_audit_logs():

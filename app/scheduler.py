@@ -250,10 +250,18 @@ class CapacityManagementSystem:
     def run_once(self):
         print("\n执行一次完整的容量管理流程...\n")
 
+        init_db()
+        self._init_default_servers()
+
         self._job_collect_metrics()
         self._job_calculate_baselines()
         self._job_predict_resources()
         self._job_check_alerts()
         self._job_check_timeout_alerts()
+
+        db = next(get_db())
+        report_gen = ReportGenerator(db)
+        report = report_gen.generate_daily_report()
+        print(f"[OK] 已生成健康报告 (ID: {report.id})")
 
         print("\n[OK] 单次执行完成\n")

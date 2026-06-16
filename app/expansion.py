@@ -7,7 +7,7 @@ from .models import (
     Server, Alert, ExpansionPlan, Approval, PurchaseOrder,
     ApprovalStatus, OrderStatus, ResourceType
 )
-from . import audit_logger
+from . import audit_logger, notifier
 
 
 class ExpansionPlanner:
@@ -100,6 +100,8 @@ class ExpansionPlanner:
             operator="system",
             details=f"已生成扩容方案: {plan.plan_title}，预估费用: {plan.estimated_cost} CNY"
         )
+
+        notifier.send_expansion_notification(plan)
 
         return plan
 
@@ -218,6 +220,8 @@ class ApprovalManager:
             details=f"审批通过扩容方案: {plan.plan_title}"
         )
 
+        notifier.send_approval_notification(plan, approval)
+
         self._create_purchase_order(plan)
 
         return plan
@@ -250,6 +254,8 @@ class ApprovalManager:
             operator=approver,
             details=f"拒绝扩容方案: {plan.plan_title}"
         )
+
+        notifier.send_approval_notification(plan, approval)
 
         return plan
 

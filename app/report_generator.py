@@ -402,7 +402,7 @@ class ReportGenerator:
             return "危险"
 
     def get_reports(self, report_type: str = None, start_date: datetime = None,
-                    end_date: datetime = None) -> List[HealthReport]:
+                    end_date: datetime = None, limit: int = None) -> List[HealthReport]:
         query = self.db.query(HealthReport)
         if report_type:
             query = query.filter(HealthReport.report_type == report_type)
@@ -410,7 +410,10 @@ class ReportGenerator:
             query = query.filter(HealthReport.report_date >= start_date)
         if end_date:
             query = query.filter(HealthReport.report_date <= end_date)
-        return query.order_by(HealthReport.report_date.desc()).all()
+        query = query.order_by(HealthReport.report_date.desc())
+        if limit:
+            query = query.limit(limit)
+        return query.all()
 
     def get_report(self, report_id: int) -> Optional[HealthReport]:
         return self.db.query(HealthReport).filter(HealthReport.id == report_id).first()

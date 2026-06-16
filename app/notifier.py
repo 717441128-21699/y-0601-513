@@ -109,7 +109,7 @@ class NotificationService:
             f"方案名称: {plan.plan_title}\n"
             f"资源类型: {plan.resource_type}\n"
             f"推荐配置: {plan.recommended_spec} x {plan.quantity}\n"
-            f"预估费用: ¥{plan.estimated_cost:,.2f}\n"
+            f"预估费用: {plan.estimated_cost:,.2f} {plan.cost_currency}\n"
             f"预计交付: {plan.delivery_days}天\n"
             f"创建时间: {plan.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -175,3 +175,8 @@ def send_escalation_notification(alert, server) -> bool:
 def send_expansion_notification(plan) -> bool:
     service = get_notification_service()
     return service.send_expansion_notification(plan)
+
+
+def send_approval_notification(plan, approval) -> bool:
+    service = get_notification_service()
+    return service.send_approval_notification(plan, approval)
