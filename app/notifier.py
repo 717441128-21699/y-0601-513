@@ -39,6 +39,13 @@ class NotificationService:
         message = self._format_approval_message(plan, approval)
         return self._send_notification(message, "approval")
 
+    def send_verification_failed_notification(self, order, verification) -> bool:
+        if not self.enabled:
+            return False
+
+        message = self._format_verification_failed_message(order, verification)
+        return self._send_notification(message, "verification_failed")
+
     def _format_alert_message(self, alert, server) -> str:
         level_emoji = {
             'info': '[i]',
@@ -129,6 +136,20 @@ class NotificationService:
             f"━━━━━━━━━━━━━━━━━━"
         )
 
+    def _format_verification_failed_message(self, order, verification) -> str:
+        return (
+            f"[X] 【扩容验证失败-已回滚】\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"采购订单: {order.order_no}\n"
+            f"供应商: {order.supplier}\n"
+            f"扩容方案ID: {order.expansion_plan_id}\n"
+            f"验证时间: {verification.verified_at.strftime('%Y-%m-%d %H:%M:%S') if verification.verified_at else '-'}\n"
+            f"回滚时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"失败原因: {verification.rollback_reason or '未达标自动回滚'}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"请管理员核查扩容方案和交付资源！"
+        )
+
     def _send_notification(self, message: str, msg_type: str) -> bool:
         if not self.enabled or not self.webhook_url:
             print(f"\n[通知-{msg_type}] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -180,3 +201,8 @@ def send_expansion_notification(plan) -> bool:
 def send_approval_notification(plan, approval) -> bool:
     service = get_notification_service()
     return service.send_approval_notification(plan, approval)
+
+
+def send_verification_failed_notification(order, verification) -> bool:
+    service = get_notification_service()
+    return service.send_verification_failed_notification(order, verification)

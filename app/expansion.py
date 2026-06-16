@@ -306,6 +306,7 @@ class PurchaseOrderManager:
         if not order:
             return None
 
+        previous_status = order.status
         order.status = status
         order.updated_at = datetime.now()
 
@@ -330,7 +331,56 @@ class PurchaseOrderManager:
             details=f"更新订单 {order.order_no} 状态为: {status}"
         )
 
+        if status in [OrderStatus.DELIVERED.value, OrderStatus.COMPLETED.value] and previous_status != status:
+            self._auto_trigger_verification(order, operator)
+
         return order
+
+    def _auto_trigger_verification(self, order: PurchaseOrder, operator: str):
+        try:
+            from .verification import VerificationManager
+
+            verifier = VerificationManager(self.db)
+            verification = verifier.create_verification(order.expansion_plan_id)
+            if verification:
+                result = verifier.run_verification(order.expansion_plan_id, operator)
+
+                if result and result.status == 'rolled_back':
+                    notifier.send_verification_failed_notification(order, result)
+
+                    plan = self.db.query(ExpansionPlan).filter(
+                        ExpansionPlan.id == order.expansion_plan_id
+                    ).first()
+                    if plan and plan.justification:
+                        plan.justification += (
+                            f"\n\n=== 扩容验证失败回滚记录 ===\n"
+                            f"回滚时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            f"回滚原因: {result.rollback_reason}\n"
+                            f"验证报告: {result.verification_report[:200] if result.verification_report else ''}"
+                        )
+                        self.db.commit()
+
+                audit_logger.log_audit(
+                    self.db,
+                    module="verification",
+                    action="auto_trigger",
+                    resource_type="verification",
+                    resource_id=result.id if result else verification.id,
+                    operator=operator,
+                    details=f"订单 {order.order_no} 交付后自动触发扩容验证，结果: {result.status if result else verification.status}"
+                )
+        except Exception as e:
+            print(f"[!] 自动触发验证失败: {e}")
+            audit_logger.log_audit(
+                self.db,
+                module="verification",
+                action="auto_trigger_failed",
+                resource_type="purchase_order",
+                resource_id=order.id,
+                operator=operator,
+                details=f"自动触发验证异常: {str(e)}",
+                result="failed"
+            )
 
     def get_orders(self, plan_id: int = None, status: str = None,
                    start_time: datetime = None, end_time: datetime = None) -> List[PurchaseOrder]:
