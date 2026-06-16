@@ -1,0 +1,56 @@
+system:
+  name: "IT容量管理系统"
+  version: "1.0.0"
+  timezone: "Asia/Shanghai"
+
+database:
+  url: "sqlite:///data/capacity.db"
+
+collection:
+  interval_minutes: 5
+  retention_days: 90
+
+baseline:
+  history_days: 30
+  calculation_method: "percentile_95"
+
+prediction:
+  forecast_days: 7
+  algorithm: "linear_regression"
+
+alert:
+  warning_threshold: 70
+  critical_threshold: 80
+  fatal_threshold: 90
+  upgrade_hours: 2
+
+expansion:
+  auto_approve: false
+  default_supplier: "默认供应商"
+  delivery_days: 7
+
+report:
+  generate_time: "02:00"
+  export_dir: "exports"
+
+notification:
+  enabled: true
+  it_management_group: "it_management"
+  webhook_url: ""
+
+servers:
+  - name: "web-server-01"
+    type: "web"
+    ip: "192.168.1.101"
+  - name: "web-server-02"
+    type: "web"
+    ip: "192.168.1.102"
+  - name: "db-server-01"
+    type: "database"
+    ip: "192.168.1.201"
+  - name: "app-server-01"
+    type: "application"
+    ip: "192.168.1.301"
+  - name: "app-server-02"
+    type: "application"
+    ip: "192.168.1.302"
